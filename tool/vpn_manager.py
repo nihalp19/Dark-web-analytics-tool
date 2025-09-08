@@ -3,27 +3,29 @@ import time
 import os
 from config import VPN_CONFIG
 
+
 class VPNManager:
     def __init__(self):
         self.process = None
         self.connected = False
 
-    def connect(self):
-        """Connect to VPN using OpenVPN CLI"""
-        print("[+] Connecting to VPN...")
+    def _connect_single(self, openvpn_path, config_path, auth_path):
+        """Connect to a single VPN config"""
+        print(f"[+] Connecting to VPN using {config_path}")
 
-        openvpn_path = r"C:\Program Files\OpenVPN\bin\openvpn.exe"
-
-        # Check if OpenVPN exists
         if not os.path.exists(openvpn_path):
             print(f"[-] OpenVPN not found at {openvpn_path}")
+            return False
+
+        if not os.path.exists(config_path):
+            print(f"[-] Config file not found: {config_path}")
             return False
 
         # Build command
         cmd = [
             openvpn_path,
-            "--config", VPN_CONFIG["config_path"],
-            "--auth-user-pass", VPN_CONFIG["auth_path"]
+            "--config", config_path,
+            "--auth-user-pass", auth_path
         ]
 
         try:
@@ -35,24 +37,21 @@ class VPNManager:
             )
 
             # Check connection status
-            timeout = 15  # seconds
+            timeout = 25  # seconds
             start_time = time.time()
             while time.time() - start_time < timeout:
                 output = self.process.stdout.readline()
                 if output:
                     print(output.strip())
-                    # Detect successful connection message
                     if "Initialization Sequence Completed" in output:
+                        print(f"[+] Connected with {config_path}")
                         self.connected = True
-                        print("[+] VPN connected successfully!")
                         return True
                 if self.process.poll() is not None:
-                    # Process exited unexpectedly
                     stdout, stderr = self.process.communicate()
-                    print(f"[-] VPN process exited. Logs:\n{stdout}\n{stderr}")
+                    print(f"[-] VPN exited early:\n{stdout}\n{stderr}")
                     return False
 
-            # Timeout reached without success
             print("[-] VPN connection timed out.")
             return False
 
@@ -65,12 +64,37 @@ class VPNManager:
         if self.process:
             self.process.terminate()
             self.process.wait()
-            self.connected = False
-            print("[+] VPN disconnected")
+        self.process = None
+        self.connected = False
+        print("[+] VPN disconnected")
 
     def is_connected(self):
-        """Check VPN status"""
-        # Also check if process is still running
-        if self.process and self.process.poll() is None:
-            return self.connected
-        return False
+        return self.connected and self.process and self.process.poll() is None
+
+    def rotate_connections(self, interval=600):
+        """Rotate VPN servers every X seconds (default = 10 minutes)"""
+        configs = VPN_CONFIG.get("configs", [])
+
+        if not configs:
+            print("[-] No VPN configs found in VPN_CONFIG")
+            return
+
+        idx = 0
+        while True:
+            cfg = configs[idx]
+            print(f"\n[=] Switching to config: {cfg['config_path']}")
+            
+            success = self._connect_single(
+                VPN_CONFIG["openvpn_path"],
+                cfg["config_path"],
+                cfg["auth_path"]
+            )
+
+            if not success:
+                print("[-] Failed to connect, skipping to next...")
+            else:
+                time.sleep(interval)  # stay connected for 10 min
+                self.disconnect()
+
+            # Rotate to next config
+            idx = (idx + 1) % len(configs)
